@@ -1,0 +1,998 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Secure 2FA Authenticator</title>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js-pbkdf2.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/otplib@12.0.1/otplib-browser.js"></script>
+    <style>
+        :root {
+            --primary: #4285f4;
+            --primary-dark: #3367d6;
+            --secondary: #34a853;
+            --danger: #ea4335;
+            --warning: #fbbc05;
+            --light: #f8f9fa;
+            --dark: #202124;
+            --gray: #5f6368;
+            --border: #dadce0;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+        }
+
+        body {
+            background-color: #f5f5f5;
+            color: var(--dark);
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        header h1 {
+            color: var(--primary);
+            margin-bottom: 10px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            padding: 24px;
+            margin-bottom: 20px;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        .btn {
+            padding: 12px 20px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .btn-primary {
+            background-color: var(--primary);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background-color: var(--primary-dark);
+        }
+
+        .btn-secondary {
+            background-color: var(--light);
+            color: var(--dark);
+            border: 1px solid var(--border);
+        }
+
+        .btn-secondary:hover {
+            background-color: #e8eaed;
+        }
+
+        .btn-danger {
+            background-color: var(--danger);
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background-color: #d23c2e;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+        }
+
+        input[type="text"],
+        input[type="email"],
+        input[type="password"] {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border 0.2s ease;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+
+        .auth-container {
+            max-width: 400px;
+            margin: 40px auto;
+        }
+
+        .tabs {
+            display: flex;
+            margin-bottom: 20px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .tab {
+            padding: 12px 20px;
+            cursor: pointer;
+            font-weight: 500;
+            border-bottom: 2px solid transparent;
+        }
+
+        .tab.active {
+            border-bottom-color: var(--primary);
+            color: var(--primary);
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .account-list {
+            margin-top: 20px;
+        }
+
+        .account-item {
+            display: flex;
+            align-items: center;
+            padding: 16px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            margin-bottom: 12px;
+            transition: all 0.2s ease;
+        }
+
+        .account-item:hover {
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        .account-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background-color: var(--primary);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            margin-right: 16px;
+        }
+
+        .account-details {
+            flex-grow: 1;
+        }
+
+        .account-name {
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .account-issuer {
+            color: var(--gray);
+            font-size: 14px;
+        }
+
+        .account-code {
+            font-size: 24px;
+            font-weight: 600;
+            letter-spacing: 2px;
+            color: var(--primary);
+            min-width: 100px;
+            text-align: center;
+        }
+
+        .account-actions {
+            display: flex;
+            gap: 8px;
+            margin-left: 16px;
+        }
+
+        .progress-bar {
+            height: 4px;
+            background-color: var(--border);
+            border-radius: 2px;
+            margin-top: 8px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background-color: var(--primary);
+            width: 100%;
+            transition: width 1s linear;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px 20px;
+            color: var(--gray);
+        }
+
+        .empty-state h3 {
+            margin-bottom: 10px;
+        }
+
+        .modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        .modal-content {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            width: 90%;
+            max-width: 500px;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .modal-title {
+            font-size: 20px;
+            font-weight: 600;
+        }
+
+        .close-btn {
+            background: none;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            color: var(--gray);
+        }
+
+        .qr-scanner-container {
+            width: 100%;
+            height: 300px;
+            background-color: #f0f0f0;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            overflow: hidden;
+        }
+
+        #qr-video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .scanner-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .scanner-frame {
+            width: 200px;
+            height: 200px;
+            border: 2px solid var(--primary);
+            border-radius: 8px;
+            position: relative;
+        }
+
+        .scanner-frame::before,
+        .scanner-frame::after {
+            content: '';
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            border: 2px solid var(--primary);
+        }
+
+        .scanner-frame::before {
+            top: -2px;
+            left: -2px;
+            border-right: none;
+            border-bottom: none;
+        }
+
+        .scanner-frame::after {
+            bottom: -2px;
+            right: -2px;
+            border-left: none;
+            border-top: none;
+        }
+
+        .manual-entry {
+            margin-top: 20px;
+        }
+
+        .form-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+            margin-top: 20px;
+        }
+
+        .user-menu {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+
+        .user-email {
+            font-weight: 500;
+        }
+
+        .notification {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 12px 20px;
+            border-radius: 8px;
+            background-color: var(--primary);
+            color: white;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+            z-index: 1001;
+            transition: all 0.3s ease;
+        }
+
+        .notification.success {
+            background-color: var(--secondary);
+        }
+
+        .notification.error {
+            background-color: var(--danger);
+        }
+
+        .copy-btn {
+            background: none;
+            border: none;
+            color: var(--primary);
+            cursor: pointer;
+            font-size: 16px;
+            padding: 4px;
+            border-radius: 4px;
+        }
+
+        .copy-btn:hover {
+            background-color: rgba(66, 133, 244, 0.1);
+        }
+
+        @media (max-width: 600px) {
+            .container {
+                padding: 10px;
+            }
+            
+            .account-item {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+            
+            .account-code {
+                margin-top: 12px;
+                margin-bottom: 8px;
+            }
+            
+            .account-actions {
+                margin-left: 0;
+                width: 100%;
+                justify-content: flex-end;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Secure 2FA Authenticator</h1>
+            <p>Generate verification codes for your online accounts</p>
+        </header>
+
+        <!-- Authentication Section -->
+        <div id="auth-section" class="auth-container">
+            <div class="card">
+                <div class="tabs">
+                    <div class="tab active" data-tab="signin">Sign In</div>
+                    <div class="tab" data-tab="signup">Sign Up</div>
+                </div>
+
+                <div id="signin-tab" class="tab-content active">
+                    <form id="signin-form">
+                        <div class="form-group">
+                            <label for="signin-email">Email</label>
+                            <input type="email" id="signin-email" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="signin-password">Password</label>
+                            <input type="password" id="signin-password" required>
+                        </div>
+                        <button type="submit" class="btn btn-primary" style="width: 100%;">Sign In</button>
+                    </form>
+                    <div style="text-align: center; margin-top: 20px;">
+                        <button id="google-signin" class="btn btn-secondary" style="width: 100%;">
+                            Sign In with Google
+                        </button>
+                    </div>
+                </div>
+
+                <div id="signup-tab" class="tab-content">
+                    <form id="signup-form">
+                        <div class="form-group">
+                            <label for="signup-email">Email</label>
+                            <input type="email" id="signup-email" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="signup-password">Password</label>
+                            <input type="password" id="signup-password" minlength="6" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="signup-confirm-password">Confirm Password</label>
+                            <input type="password" id="signup-confirm-password" required>
+                        </div>
+                        <button type="submit" class="btn btn-primary" style="width: 100%;">Create Account</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main App Section -->
+        <div id="app-section" class="hidden">
+            <div class="user-menu">
+                <span class="user-email" id="user-email"></span>
+                <button id="signout-btn" class="btn btn-secondary">Sign Out</button>
+            </div>
+
+            <div class="card">
+                <div style="display: flex; justify-content: between; align-items: center; margin-bottom: 20px;">
+                    <h2>Your Accounts</h2>
+                    <button id="add-account-btn" class="btn btn-primary">+ Add Account</button>
+                </div>
+
+                <div id="account-list" class="account-list">
+                    <!-- Accounts will be dynamically added here -->
+                    <div class="empty-state" id="empty-state">
+                        <h3>No accounts yet</h3>
+                        <p>Add your first 2FA account by clicking the "Add Account" button</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Add Account Modal -->
+        <div id="add-account-modal" class="modal hidden">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3 class="modal-title">Add 2FA Account</h3>
+                    <button class="close-btn" id="close-modal">&times;</button>
+                </div>
+
+                <div class="tabs">
+                    <div class="tab active" data-modal-tab="scan">Scan QR Code</div>
+                    <div class="tab" data-modal-tab="manual">Manual Entry</div>
+                </div>
+
+                <div id="scan-tab" class="tab-content active">
+                    <div class="qr-scanner-container">
+                        <video id="qr-video"></video>
+                        <div class="scanner-overlay">
+                            <div class="scanner-frame"></div>
+                        </div>
+                    </div>
+                    <p style="text-align: center; margin-bottom: 20px;">Point your camera at a QR code</p>
+                    <button id="start-scan" class="btn btn-primary" style="width: 100%;">Start Camera</button>
+                </div>
+
+                <div id="manual-tab" class="tab-content">
+                    <div class="manual-entry">
+                        <div class="form-group">
+                            <label for="account-name">Account Name</label>
+                            <input type="text" id="account-name" placeholder="e.g., Google, GitHub">
+                        </div>
+                        <div class="form-group">
+                            <label for="account-issuer">Issuer (Optional)</label>
+                            <input type="text" id="account-issuer" placeholder="e.g., Google LLC">
+                        </div>
+                        <div class="form-group">
+                            <label for="secret-key">Secret Key</label>
+                            <input type="text" id="secret-key" placeholder="Enter your secret key" required>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-actions">
+                    <button class="btn btn-secondary" id="cancel-modal">Cancel</button>
+                    <button class="btn btn-primary" id="save-account">Save Account</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Firebase Configuration - Replace with your actual config
+        const firebaseConfig = {
+            apiKey: "YOUR_API_KEY",
+            authDomain: "YOUR_PROJECT.firebaseapp.com",
+            projectId: "YOUR_PROJECT_ID",
+            storageBucket: "YOUR_PROJECT.appspot.com",
+            messagingSenderId: "YOUR_SENDER_ID",
+            appId: "YOUR_APP_ID"
+        };
+
+        // Initialize Firebase
+        firebase.initializeApp(firebaseConfig);
+        const auth = firebase.auth();
+        const db = firebase.firestore();
+
+        // DOM Elements
+        const authSection = document.getElementById('auth-section');
+        const appSection = document.getElementById('app-section');
+        const signinForm = document.getElementById('signin-form');
+        const signupForm = document.getElementById('signup-form');
+        const googleSignin = document.getElementById('google-signin');
+        const signoutBtn = document.getElementById('signout-btn');
+        const userEmail = document.getElementById('user-email');
+        const addAccountBtn = document.getElementById('add-account-btn');
+        const accountList = document.getElementById('account-list');
+        const emptyState = document.getElementById('empty-state');
+        const addAccountModal = document.getElementById('add-account-modal');
+        const closeModal = document.getElementById('close-modal');
+        const cancelModal = document.getElementById('cancel-modal');
+        const saveAccountBtn = document.getElementById('save-account');
+        const startScanBtn = document.getElementById('start-scan');
+        const qrVideo = document.getElementById('qr-video');
+
+        // State
+        let currentUser = null;
+        let accounts = [];
+        let qrScanner = null;
+        let scanInterval = null;
+
+        // Tab functionality
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                const tabId = tab.getAttribute('data-tab');
+                
+                // Update tabs
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                
+                // Update content
+                document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+                document.getElementById(`${tabId}-tab`).classList.add('active');
+            });
+        });
+
+        // Modal tab functionality
+        document.querySelectorAll('[data-modal-tab]').forEach(tab => {
+            tab.addEventListener('click', () => {
+                const tabId = tab.getAttribute('data-modal-tab');
+                
+                // Update tabs
+                document.querySelectorAll('[data-modal-tab]').forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                
+                // Update content
+                document.querySelectorAll('.modal .tab-content').forEach(content => content.classList.remove('active'));
+                document.getElementById(`${tabId}-tab`).classList.add('active');
+            });
+        });
+
+        // Authentication
+        signinForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const email = document.getElementById('signin-email').value;
+            const password = document.getElementById('signin-password').value;
+            
+            try {
+                await auth.signInWithEmailAndPassword(email, password);
+                showNotification('Signed in successfully', 'success');
+            } catch (error) {
+                showNotification(error.message, 'error');
+            }
+        });
+
+        signupForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const email = document.getElementById('signup-email').value;
+            const password = document.getElementById('signup-password').value;
+            const confirmPassword = document.getElementById('signup-confirm-password').value;
+            
+            if (password !== confirmPassword) {
+                showNotification('Passwords do not match', 'error');
+                return;
+            }
+            
+            try {
+                await auth.createUserWithEmailAndPassword(email, password);
+                showNotification('Account created successfully', 'success');
+            } catch (error) {
+                showNotification(error.message, 'error');
+            }
+        });
+
+        googleSignin.addEventListener('click', async () => {
+            const provider = new firebase.auth.GoogleAuthProvider();
+            try {
+                await auth.signInWithPopup(provider);
+                showNotification('Signed in with Google', 'success');
+            } catch (error) {
+                showNotification(error.message, 'error');
+            }
+        });
+
+        signoutBtn.addEventListener('click', () => {
+            auth.signOut();
+        });
+
+        // Modal controls
+        addAccountBtn.addEventListener('click', () => {
+            addAccountModal.classList.remove('hidden');
+        });
+
+        closeModal.addEventListener('click', () => {
+            addAccountModal.classList.add('hidden');
+            stopQRScanner();
+        });
+
+        cancelModal.addEventListener('click', () => {
+            addAccountModal.classList.add('hidden');
+            stopQRScanner();
+        });
+
+        // QR Code Scanning
+        startScanBtn.addEventListener('click', startQRScanner);
+
+        function startQRScanner() {
+            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
+                    .then(function(stream) {
+                        qrVideo.srcObject = stream;
+                        qrVideo.play();
+                        
+                        // Simple QR code detection (in a real app, you'd use a proper library)
+                        scanInterval = setInterval(() => {
+                            // This is a simplified version - in production use a proper QR library
+                            // For demo purposes, we'll just simulate QR detection
+                            console.log("Scanning for QR codes...");
+                        }, 1000);
+                        
+                        startScanBtn.textContent = "Scanning...";
+                        startScanBtn.disabled = true;
+                    })
+                    .catch(function(error) {
+                        showNotification('Camera access denied: ' + error.message, 'error');
+                    });
+            } else {
+                showNotification('Camera not supported on this device', 'error');
+            }
+        }
+
+        function stopQRScanner() {
+            if (qrVideo.srcObject) {
+                qrVideo.srcObject.getTracks().forEach(track => track.stop());
+                qrVideo.srcObject = null;
+            }
+            
+            if (scanInterval) {
+                clearInterval(scanInterval);
+                scanInterval = null;
+            }
+            
+            startScanBtn.textContent = "Start Camera";
+            startScanBtn.disabled = false;
+        }
+
+        // Save account
+        saveAccountBtn.addEventListener('click', async () => {
+            const manualTab = document.getElementById('manual-tab');
+            const isManual = !manualTab.classList.contains('hidden');
+            
+            let accountName, issuer, secret;
+            
+            if (isManual) {
+                accountName = document.getElementById('account-name').value;
+                issuer = document.getElementById('account-issuer').value;
+                secret = document.getElementById('secret-key').value.trim();
+                
+                if (!accountName || !secret) {
+                    showNotification('Account name and secret key are required', 'error');
+                    return;
+                }
+            } else {
+                // In a real implementation, this would come from QR code parsing
+                // For demo, we'll use a placeholder
+                accountName = "Demo Account";
+                issuer = "Demo Issuer";
+                secret = "JBSWY3DPEHPK3PXP"; // Demo secret
+            }
+            
+            try {
+                await saveAccount(accountName, issuer, secret);
+                addAccountModal.classList.add('hidden');
+                stopQRScanner();
+                showNotification('Account added successfully', 'success');
+                loadAccounts();
+            } catch (error) {
+                showNotification('Error saving account: ' + error.message, 'error');
+            }
+        });
+
+        // Firebase Auth State Observer
+        auth.onAuthStateChanged(async (user) => {
+            if (user) {
+                currentUser = user;
+                userEmail.textContent = user.email;
+                authSection.classList.add('hidden');
+                appSection.classList.remove('hidden');
+                await loadAccounts();
+            } else {
+                currentUser = null;
+                authSection.classList.remove('hidden');
+                appSection.classList.add('hidden');
+                accounts = [];
+                renderAccounts();
+            }
+        });
+
+        // Encryption functions
+        function deriveKey(password, salt) {
+            // In a real implementation, you would use Web Crypto API for better security
+            // For this demo, we're using CryptoJS for simplicity
+            return CryptoJS.PBKDF2(password, salt, {
+                keySize: 256/32,
+                iterations: 100000
+            });
+        }
+
+        function encryptData(data, key) {
+            return CryptoJS.AES.encrypt(data, key).toString();
+        }
+
+        function decryptData(encryptedData, key) {
+            const bytes = CryptoJS.AES.decrypt(encryptedData, key);
+            return bytes.toString(CryptoJS.enc.Utf8);
+        }
+
+        // Account management
+        async function saveAccount(name, issuer, secret) {
+            if (!currentUser) throw new Error('User not authenticated');
+            
+            // Create encryption key from user's UID
+            const encryptionKey = deriveKey(currentUser.uid, '2fa-salt');
+            
+            // Encrypt the secret
+            const encryptedSecret = encryptData(secret, encryptionKey);
+            
+            // Save to Firestore
+            await db.collection('users').doc(currentUser.uid).collection('accounts').add({
+                name,
+                issuer: issuer || '',
+                encryptedSecret,
+                createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            });
+        }
+
+        async function loadAccounts() {
+            if (!currentUser) return;
+            
+            try {
+                const snapshot = await db.collection('users').doc(currentUser.uid).collection('accounts').get();
+                accounts = [];
+                
+                snapshot.forEach(doc => {
+                    accounts.push({
+                        id: doc.id,
+                        ...doc.data()
+                    });
+                });
+                
+                renderAccounts();
+            } catch (error) {
+                console.error('Error loading accounts:', error);
+                showNotification('Error loading accounts', 'error');
+            }
+        }
+
+        async function deleteAccount(accountId) {
+            if (!currentUser) return;
+            
+            try {
+                await db.collection('users').doc(currentUser.uid).collection('accounts').doc(accountId).delete();
+                showNotification('Account deleted', 'success');
+                loadAccounts();
+            } catch (error) {
+                showNotification('Error deleting account', 'error');
+            }
+        }
+
+        function renderAccounts() {
+            accountList.innerHTML = '';
+            
+            if (accounts.length === 0) {
+                accountList.appendChild(emptyState);
+                emptyState.classList.remove('hidden');
+                return;
+            }
+            
+            emptyState.classList.add('hidden');
+            
+            accounts.forEach(account => {
+                const accountElement = createAccountElement(account);
+                accountList.appendChild(accountElement);
+            });
+        }
+
+        function createAccountElement(account) {
+            const encryptionKey = deriveKey(currentUser.uid, '2fa-salt');
+            let decryptedSecret;
+            
+            try {
+                decryptedSecret = decryptData(account.encryptedSecret, encryptionKey);
+            } catch (error) {
+                console.error('Error decrypting secret:', error);
+                return null;
+            }
+            
+            const accountItem = document.createElement('div');
+            accountItem.className = 'account-item';
+            accountItem.innerHTML = `
+                <div class="account-icon">${account.name.charAt(0).toUpperCase()}</div>
+                <div class="account-details">
+                    <div class="account-name">${account.name}</div>
+                    <div class="account-issuer">${account.issuer || 'No issuer specified'}</div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width: 100%;"></div>
+                    </div>
+                </div>
+                <div class="account-code" id="code-${account.id}">------</div>
+                <div class="account-actions">
+                    <button class="copy-btn" data-account="${account.id}" title="Copy code">
+                        📋
+                    </button>
+                    <button class="btn btn-danger delete-btn" data-account="${account.id}">Delete</button>
+                </div>
+            `;
+            
+            // Generate and update code
+            updateTOTPCode(account.id, decryptedSecret);
+            
+            // Set up copy button
+            accountItem.querySelector('.copy-btn').addEventListener('click', () => {
+                const codeElement = document.getElementById(`code-${account.id}`);
+                navigator.clipboard.writeText(codeElement.textContent)
+                    .then(() => showNotification('Code copied to clipboard', 'success'))
+                    .catch(() => showNotification('Failed to copy code', 'error'));
+            });
+            
+            // Set up delete button
+            accountItem.querySelector('.delete-btn').addEventListener('click', () => {
+                if (confirm(`Are you sure you want to delete ${account.name}?`)) {
+                    deleteAccount(account.id);
+                }
+            });
+            
+            return accountItem;
+        }
+
+        function updateTOTPCode(accountId, secret) {
+            try {
+                const code = otplib.authenticator.generate(secret);
+                const codeElement = document.getElementById(`code-${accountId}`);
+                if (codeElement) {
+                    codeElement.textContent = code;
+                }
+            } catch (error) {
+                console.error('Error generating TOTP code:', error);
+            }
+        }
+
+        // Update codes every second and progress bars every 100ms
+        setInterval(() => {
+            if (currentUser && accounts.length > 0) {
+                accounts.forEach(account => {
+                    const encryptionKey = deriveKey(currentUser.uid, '2fa-salt');
+                    try {
+                        const decryptedSecret = decryptData(account.encryptedSecret, encryptionKey);
+                        updateTOTPCode(account.id, decryptedSecret);
+                    } catch (error) {
+                        console.error('Error updating code:', error);
+                    }
+                });
+            }
+        }, 1000);
+
+        // Update progress bars
+        setInterval(() => {
+            const progressBars = document.querySelectorAll('.progress-fill');
+            const now = Math.floor(Date.now() / 1000);
+            const timeRemaining = 30 - (now % 30);
+            const percentage = (timeRemaining / 30) * 100;
+            
+            progressBars.forEach(bar => {
+                bar.style.width = `${percentage}%`;
+                bar.style.backgroundColor = percentage > 20 ? 'var(--primary)' : 
+                                           percentage > 10 ? 'var(--warning)' : 'var(--danger)';
+            });
+        }, 100);
+
+        // Notification system
+        function showNotification(message, type = 'info') {
+            // Remove existing notifications
+            document.querySelectorAll('.notification').forEach(notification => {
+                notification.remove();
+            });
+            
+            const notification = document.createElement('div');
+            notification.className = `notification ${type}`;
+            notification.textContent = message;
+            
+            document.body.appendChild(notification);
+            
+            setTimeout(() => {
+                notification.style.opacity = '0';
+                setTimeout(() => {
+                    if (notification.parentNode) {
+                        notification.parentNode.removeChild(notification);
+                    }
+                }, 300);
+            }, 3000);
+        }
+
+        // Initialize the app
+        console.log('2FA Authenticator initialized');
+    </script>
+</body>
+</html>
