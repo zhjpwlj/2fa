@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Lumo 2FA – 零知识、离线优先</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="icon" href="data:," />
+<style>
+:root{ --bg:#0B0B0D; --card:#1C1C1E; --primary:#06C167; --text-primary:rgba(255,255,255,.87); --text-secondary:rgba(255,255,255,.6); --success:#34C759; --danger:#FF3B30; }
+body{ margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--text-primary); }
+.container{max-width:720px;margin:auto;padding:1rem;}
+.card{ background:var(--card); border-radius:12px; padding:1rem; margin-top:1rem; backdrop-filter:blur(6px); }
+button{ height:44px;min-width:44px; border:none;border-radius:10px; background:var(--primary);color:#fff; font-weight:600;cursor:pointer; }
+button:disabled{opacity:.5;cursor:not-allowed;}
+input{ width:100%;padding:.5rem;margin:.3rem 0; border:1px solid #444;border-radius:6px; background:#222;color:#fff; }
+.toast{ position:fixed;bottom:20px;left:50%;transform:translateX(-50%); padding:.8rem 1.2rem;border-radius:8px;color:#fff; animation:fade .3s forwards;z-index:9999;}
+.toast.success{background:var(--success);} .toast.error{background:var(--danger);}
+@keyframes fade{from{opacity:0;}to{opacity:1;}}
+.progress-ring{ position:relative;width:48px;height:48px; } .progress-ring circle{ fill:none;stroke:#555;stroke-width:4; } .progress-ring .progress{ stroke:var(--primary);stroke-linecap:round; transform:rotate(-90deg);transform-origin:center; }
+table{width:100%;border-collapse:collapse;} td,th{padding:.6rem;border-bottom:1px solid rgba(255,255,255,.04); text-align:left;}
+.code-cell{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, "Roboto Mono", monospace; font-size:1.25rem;}
+.small{font-size:.85rem;color:var(--text-secondary);}
+.floater{position:fixed;right:18px;bottom:18px;background:var(--primary);color:#fff;border-radius:999px;border:none;width:56px;height:56px;font-size:22px;display:flex;align-items:center;justify-content:center;cursor:pointer;}
+</style>
+</head>
+<body>
+<div class="container">
+  <div id="auth-section" class="card">
+    <h3>登录 / 注册</h3>
+    <input id="email" type="email" placeholder="邮箱">
+    <input id="pwd" type="password" placeholder="密码">
+    <div style="display:flex;gap:.5rem;">
+      <button id="signin">登录</button>
+      <button id="signup">注册</button>
+    </div>
+    <p id="auth-msg" class="small"></p>
+  </div>
+
+  <div id="app-section" style="display:none;">
+    <div class="card">
+      <p>已登录：<span id="user-email"></span>
+      <button id="signout" style="float:right;background:#444;">退出</button></p>
+    </div>
+
+    <div class="card" id="master-pwd-card">
+      <h4>主密码（本地派生密钥）</h4>
+      <input id="master-pwd" type="password" placeholder="输入主密码（用于本地解密）">
+      <div style="display:flex;gap:.5rem;">
+        <button id="save-master-pwd">保存主密码</button>
+        <button id="forget-master-pwd" style="background:#444;">忘记主密码（仅本地）</button>
+      </div>
+      <p id="master-msg" class="small"></p>
+    </div>
+
+    <div class="card">
+      <h4>云备份（零知识）</h4>
+      <label><input type="checkbox" id="cloud-toggle"> 启用云备份（加密后上传到 Firestore）</label>
+      <p id="cloud-msg" class="small">开启后会把加密包上传到用户私有文档。后续设备登录并提供主密码即可解密恢复。</p>
+    </div>
+
+    <div class="card">
+      <h4>添加新账户</h4>
+      <button id="scan-qr">📷 扫描二维码</button>
+      <div id="qr-reader" style="width:320px;margin-top:.5rem;"></div>
+      <input id="new-label" placeholder="服务名称（如 GitHub）">
+      <input id="new-secret" placeholder="Base32 秘钥（或粘贴 otpauth:// URI）">
+      <div style="display:flex;gap:.5rem;">
+        <button id="add-account">添加账户</button>
+        <button id="import-json" style="background:#444;">从 JSON 导入</button>
+        <button id="export-json" style="background:#222;">导出（加密包）</button>
+      </div>
+      <p id="add-msg" class="small"></p>
+    </div>
+
+    <div class="card">
+      <h4>我的 TOTP 列表</h4>
+      <table id="account-table">
+        <thead><tr><th>服务</th><th>代码</th><th>剩余</th><th>操作</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<button class="floater" id="quick-add" title="快速添加">＋</button>
+
+<!-- third-party libs -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/otplib@12.0.1/otplib-browser.min.js"></script>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/minified/html5-qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/localforage/1.10.0/localforage.min.js"></script>
+
+<script>
+/* ================= Firebase 配置（替换） ================= */
+const firebaseConfig = {
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+  projectId: "YOUR_PROJECT_ID",
+  storageBucket: "YOUR_PROJECT_ID.appspot.com",
+  messagingSenderId: "YOUR_SENDER_ID",
+  appId: "YOUR_APP_ID"
+};
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db = firebase.firestore();
+
+/* ================= 本地存储 ================= */
+const STORE = localforage.createInstance({name:"lumo-2fa"});
+// seeds: [{id,label,encrypted:{ct,iv,salt}}]
+
+/* ================= 工具：Uint8/BASE64/UTF8 ================= */
+function u8ToB64(u){ return btoa(String.fromCharCode(...u)); }
+function b64ToU8(b){ return Uint8Array.from(atob(b),c=>c.charCodeAt(0)); }
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+async function sha256(text){ const h=await crypto.subtle.digest('SHA-256', encoder.encode(text)); return u8ToB64(new Uint8Array(h)); }
+
+/* ================= 密钥派生 + 加密 ================= */
+async function deriveKey(pwd, saltU8){
+  const baseKey = await crypto.subtle.importKey('raw', encoder.encode(pwd), {name:'PBKDF2'}, false, ['deriveKey']);
+  return crypto.subtle.deriveKey({name:'PBKDF2', salt: saltU8, iterations:200000, hash:'SHA-256'}, baseKey, {name:'AES-GCM', length:256}, false, ['encrypt','decrypt']);
+}
+async function encryptSecret(secret, pwd){
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveKey(pwd, salt);
+  const ct = await crypto.subtle.encrypt({name:'AES-GCM', iv}, key, encoder.encode(secret));
+  return { ct: new Uint8Array(ct), iv, salt };
+}
+async function decryptSecret(blob, pwd){
+  const {ct, iv, salt} = blob;
+  const key = await deriveKey(pwd, salt);
+  const pt = await crypto.subtle.decrypt({name:'AES-GCM', iv}, key, ct);
+  return decoder.decode(pt);
+}
+
+/* ================= UI 小工具 ================= */
+function toast(msg, type='success'){
+  const el = document.createElement('div'); el.className='toast '+(type==='error'?'error':'success'); el.textContent=msg; document.body.appendChild(el);
+  setTimeout(()=>el.remove(), 3000);
+}
+function showMsg(id, txt){ document.getElementById(id).textContent = txt; }
+
+/* ================= Auth ================= */
+document.getElementById('signin').onclick = async ()=>{
+  const email=document.getElementById('email').value.trim();
+  const pwd=document.getElementById('pwd').value;
+  try{ await auth.signInWithEmailAndPassword(email,pwd); }catch(e){ showMsg('auth-msg', e.message); }
+};
+document.getElementById('signup').onclick = async ()=>{
+  const email=document.getElementById('email').value.trim();
+  const pwd=document.getElementById('pwd').value;
+  try{ await auth.createUserWithEmailAndPassword(email,pwd); }catch(e){ showMsg('auth-msg', e.message); }
+};
+document.getElementById('signout').onclick = ()=> auth.signOut();
+
+/* ================= seeds 内存管理 ================= */
+let seeds = []; // [{id,label,encrypted:{ct,iv,salt}}]
+async function loadSeedsFromLocal(){ seeds = await STORE.getItem('seeds') || []; }
+async function saveSeedsToLocal(){ await STORE.setItem('seeds', seeds); }
+
+/* ================= auth state ================= */
+auth.onAuthStateChanged(async u=>{
+  if(u){
+    document.getElementById('user-email').textContent = u.email || u.uid;
+    document.getElementById('auth-section').style.display='none';
+    document.getElementById('app-section').style.display='block';
+    await loadSeedsFromLocal();
+    const cloudEnabled = await STORE.getItem('cloudEnabled');
+    document.getElementById('cloud-toggle').checked = !!cloudEnabled;
+    renderTable();
+    startTicker();
+    if(cloudEnabled) await syncFromCloud();
+  }else{
+    document.getElementById('auth-section').style.display='block';
+    document.getElementById('app-section').style.display='none';
+  }
+});
+
+/* ================= 主密码管理 ================= */
+document.getElementById('save-master-pwd').onclick = async ()=>{
+  const pwd = document.getElementById('master-pwd').value.trim();
+  if(!pwd){ toast('请输入主密码','error'); return; }
+  const hash = await sha256(pwd);
+  await STORE.setItem('masterHash', hash);
+  // 尝试存到 Credential Manager 以便下次自动恢复（可选）
+  try{
+    if(navigator.credentials && navigator.credentials.store){
+      await navigator.credentials.store(new PasswordCredential({id:'lumo-master-key', password:pwd, name:'Lumo Master'}));
+    }
+  }catch(e){ /* ignore */ }
+  showMsg('master-msg','已保存主密码（仅本地，用于解密）');
+  startTicker();
+};
+document.getElementById('forget-master-pwd').onclick = async ()=>{
+  await STORE.removeItem('masterHash'); document.getElementById('master-pwd').value=''; showMsg('master-msg','已清除本地主密码快照');
+};
+
+/* ================= 添加账户 ================= */
+document.getElementById('add-account').onclick = async ()=>{
+  let label = document.getElementById('new-label').value.trim();
+  let secretRaw = document.getElementById('new-secret').value.trim();
+  if(!secretRaw){ toast('请输入 secret 或 otpauth:// URI','error'); return; }
+  // 支持 otpauth URI 粘贴
+  if(secretRaw.toLowerCase().startsWith('otpauth://')){
+    try{
+      const u = new URL(secretRaw);
+      secretRaw = u.searchParams.get('secret') || '';
+      const issuer = u.searchParams.get('issuer') || u.pathname.split(':')[1] || '';
+      if(!label) label = issuer;
+    }catch(e){ toast('otpauth URI 解析失败','error'); return; }
+  }
+  secretRaw = secretRaw.replace(/\s+/g,'').toUpperCase();
+  if(!/^[A-Z2-7]+=*$/.test(secretRaw)){ toast('Base32 秘钥非法，只能包含 A-Z、2-7','error'); return; }
+  if(!label) { toast('请填写服务名称','error'); return; }
+  const masterPwd = document.getElementById('master-pwd').value.trim();
+  if(!masterPwd){ toast('请先输入主密码并保存','error'); return; }
+  try{
+    const enc = await encryptSecret(secretRaw, masterPwd);
+    const newSeed = { id: crypto.randomUUID(), label, encrypted:{ ct:u8ToB64(enc.ct), iv:u8ToB64(enc.iv), salt:u8ToB64(enc.salt) } };
+    seeds.push(newSeed);
+    await saveSeedsToLocal();
+    renderTable();
+    toast('已添加账户');
+    if(document.getElementById('cloud-toggle').checked) await syncToCloud();
+  }catch(e){ toast('加密失败：'+e.message,'error'); }
+};
+
+/* ================= 渲染 & TOTP ================= */
+function renderTable(){
+  const tbody = document.querySelector('#account-table tbody'); tbody.innerHTML='';
+  seeds.forEach(seed=>{
+    const tr = document.createElement('tr'); tr.dataset.id = seed.id;
+    tr.innerHTML = `<td>${escapeHtml(seed.label)}</td><td class="code-cell">—</td><td class="remain">—</td><td>
+      <button class="copy-btn">复制</button>
+      <button class="del-btn" style="background:#444;">删除</button>
+    </td>`;
+    tbody.appendChild(tr);
+  });
+}
+function escapeHtml(s){ return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c])); }
+
+let ticker=null;
+function startTicker(){
+  if(ticker) clearInterval(ticker);
+  ticker = setInterval(async ()=>{
+    const masterPwd = document.getElementById('master-pwd').value.trim();
+    const now = Math.floor(Date.now()/1000);
+    const step = 30;
+    const secondsLeft = step - (now % step);
+    for(const row of document.querySelectorAll('#account-table tbody tr')){
+      const id = row.dataset.id;
+      const seed = seeds.find(s=>s.id===id);
+      if(!seed) continue;
+      const codeCell = row.querySelector('.code-cell');
+      const remainCell = row.querySelector('.remain');
+      if(!masterPwd){ codeCell.textContent='—'; remainCell.textContent='—'; continue; }
+      try{
+        const enc = seed.encrypted;
+        const secret = await decryptSecret({ ct:b64ToU8(enc.ct), iv:b64ToU8(enc.iv), salt:b64ToU8(enc.salt) }, masterPwd);
+        otplib.totp.options = { digits: 6, step: 30 };
+        const code = otplib.totp.generate(secret);
+        codeCell.textContent = code;
+        remainCell.textContent = String(secondsLeft)+'s';
+      }catch(e){
+        codeCell.textContent='❌'; remainCell.textContent='—';
+      }
+    }
+  }, 1000);
+}
+startTicker();
+
+/* 复制与删除 */
+document.querySelector('#account-table tbody').addEventListener('click', async e=>{
+  const btn = e.target; const tr = btn.closest('tr'); if(!tr) return; const id = tr.dataset.id;
+  if(btn.classList.contains('copy-btn')){ const code = tr.querySelector('.code-cell').textContent; if(code && code!=='—' && code!=='❌'){ await navigator.clipboard.writeText(code); toast('已复制到剪贴板'); } }
+  if(btn.classList.contains('del-btn')){ if(!confirm('确定删除此条记录？')) return; seeds = seeds.filter(s=>s.id!==id); await saveSeedsToLocal(); tr.remove(); toast('已删除'); if(document.getElementById('cloud-toggle').checked) await syncToCloud(); }
+});
+
+/* ================= QR 扫描 ================= */
+let scanner=null;
+document.getElementById('scan-qr').onclick = ()=>{
+  if(scanner){ scanner.clear(); scanner=null; document.getElementById('qr-reader').innerHTML=''; return; }
+  scanner = new Html5Qrcode("qr-reader");
+  scanner.start({ facingMode:"environment" }, { fps:10, qrbox:250 }, decoded=>{
+    try{
+      // 支持 otpauth URI 或直接 secret
+      if(decoded.toLowerCase().startsWith('otpauth://')){
+        const u = new URL(decoded);
+        const s = u.searchParams.get('secret'); const issuer = u.searchParams.get('issuer') || u.pathname.split(':')[1] || '';
+        if(s){ document.getElementById('new-label').value = issuer; document.getElementById('new-secret').value = s; toast('二维码已读取'); }
+      }else{
+        document.getElementById('new-secret').value = decoded; toast('二维码已读取');
+      }
+    }catch(err){ toast('二维码解析失败','error'); }
+    scanner.stop().then(()=>{ scanner.clear(); scanner=null; document.getElementById('qr-reader').innerHTML=''; });
+  }, err=>{ /* 忽略扫描错误 */ });
+};
+
+/* ================= 云备份：syncToCloud / syncFromCloud ================= */
+/*
+Backup doc path: users/{uid}/backup
+Structure:
+{ version:1, encrypted: <base64>, iv:<base64>, salt:<base64>, updatedAt: Timestamp }
+*/
+document.getElementById('cloud-toggle').addEventListener('change', async (e)=>{
+  const on = e.target.checked;
+  await STORE.setItem('cloudEnabled', !!on);
+  if(on){
+    // 直接尝试同步上云（需要主密码）
+    toast('已启用云备份，稍后同步');
+    await syncToCloud();
+  }else{
+    toast('已停用云备份（本地仍保留加密数据）');
+  }
+});
+
+async function syncToCloud(){
+  const user = auth.currentUser;
+  if(!user){ toast('请先登录以使用云备份','error'); return; }
+  const masterPwd = document.getElementById('master-pwd').value.trim();
+  if(!masterPwd){ toast('上传前需输入主密码','error'); return; }
+  try{
+    // 序列化 seeds 并加密整个包
+    const payload = JSON.stringify(seeds);
+    const enc = await encryptSecret(payload, masterPwd);
+    const docRef = db.collection('users').doc(user.uid).collection('meta').doc('backup');
+    await docRef.set({
+      version:1,
+      encrypted: u8ToB64(enc.ct),
+      iv: u8ToB64(enc.iv),
+      salt: u8ToB64(enc.salt),
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    toast('云备份已上传');
+  }catch(e){ toast('云备份失败：'+e.message,'error'); }
+}
+
+async function syncFromCloud(){
+  const user = auth.currentUser;
+  if(!user){ return; }
+  try{
+    const docRef = db.collection('users').doc(user.uid).collection('meta').doc('backup');
+    const snap = await docRef.get();
+    if(!snap.exists){ showMsg('cloud-msg','未找到云备份'); return; }
+    const data = snap.data();
+    if(!data || !data.encrypted){ showMsg('cloud-msg','云备份数据格式异常'); return; }
+    const masterPwd = document.getElementById('master-pwd').value.trim();
+    if(!masterPwd){ showMsg('cloud-msg','请先输入主密码以解密云备份'); return; }
+    const ct = b64ToU8(data.encrypted);
+    const iv = b64ToU8(data.iv);
+    const salt = b64ToU8(data.salt);
+    const decrypted = await decryptSecret({ct,iv,salt}, masterPwd);
+    const parsed = JSON.parse(decrypted);
+    if(!Array.isArray(parsed)){ showMsg('cloud-msg','云备份内容非预期格式'); return; }
+    // 合并本地（去重 by id）
+    const remoteSeeds = parsed;
+    const localIds = new Set(seeds.map(s=>s.id));
+    for(const s of remoteSeeds) if(!localIds.has(s.id)) seeds.push(s);
+    await saveSeedsToLocal();
+    renderTable(); toast('已从云备份恢复并合并本地数据');
+  }catch(e){ toast('恢复云备份失败：'+e.message,'error'); }
+}
+
+/* ================= 导出 / 导入 JSON（加密包） ================= */
+document.getElementById('export-json').onclick = async ()=>{
+  const masterPwd = document.getElementById('master-pwd').value.trim();
+  if(!masterPwd){ toast('请输入主密码以导出','error'); return; }
+  try{
+    const payload = JSON.stringify(seeds);
+    const enc = await encryptSecret(payload, masterPwd);
+    const out = { version:1, encrypted:u8ToB64(enc.ct), iv:u8ToB64(enc.iv), salt:u8ToB64(enc.salt) };
+    const blob = new Blob([JSON.stringify(out,null,2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href=url; a.download='lumo-backup.json'; a.click(); URL.revokeObjectURL(url);
+    toast('已导出加密备份文件');
+  }catch(e){ toast('导出失败：'+e.message,'error'); }
+};
+
+document.getElementById('import-json').onclick = async ()=>{
+  const input = document.createElement('input'); input.type='file'; input.accept='application/json';
+  input.onchange = async ()=>{
+    const f = input.files[0]; if(!f) return;
+    const s = await f.text();
+    try{
+      const obj = JSON.parse(s);
+      if(!obj.encrypted){ toast('文件格式不对','error'); return; }
+      const masterPwd = document.getElementById('master-pwd').value.trim();
+      if(!masterPwd){ toast('请输入主密码以解密导入','error'); return; }
+      const decrypted = await decryptSecret({ ct:b64ToU8(obj.encrypted), iv:b64ToU8(obj.iv), salt:b64ToU8(obj.salt) }, masterPwd);
+      const parsed = JSON.parse(decrypted);
+      if(!Array.isArray(parsed)){ toast('备份内容格式异常','error'); return; }
+      // 合并并保存
+      const localIds = new Set(seeds.map(s=>s.id));
+      for(const s of parsed) if(!localIds.has(s.id)) seeds.push(s);
+      await saveSeedsToLocal(); renderTable(); toast('导入成功并已合并本地');
+      if(document.getElementById('cloud-toggle').checked) await syncToCloud();
+    }catch(e){ toast('导入失败：'+e.message,'error'); }
+  };
+  input.click();
+};
+
+/* ================= 快捷按钮 ================= */
+document.getElementById('quick-add').onclick = ()=>{ document.getElementById('new-label').focus(); };
+
+/* ================= 页面载入时尝试恢复 credential manager 主密码（可选） ================= */
+(async ()=>{
+  try{
+    if(navigator.credentials && navigator.credentials.get){
+      const c = await navigator.credentials.get({password:true, mediation:'silent'});
+      if(c && c.password){
+        document.getElementById('master-pwd').value = c.password;
+        const h = await sha256(c.password); await STORE.setItem('masterHash', h);
+        showMsg('master-msg','已从浏览器凭据恢复主密码（本地）');
+        startTicker();
+      }
+    }
+  }catch(e){ /* ignore */ }
+})();
+</script>
+</body>
+</html>
